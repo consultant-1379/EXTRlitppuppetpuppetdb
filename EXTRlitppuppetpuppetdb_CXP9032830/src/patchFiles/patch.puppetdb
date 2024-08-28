@@ -1,0 +1,146 @@
+diff -Naur ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/database/postgresql.pp ../../target/puppet/puppetdb/manifests/database/postgresql.pp
+--- ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/database/postgresql.pp	2019-07-25 14:43:21.019341200 +0100
++++ ../../target/puppet/puppetdb/manifests/database/postgresql.pp	2019-07-25 14:41:08.000000000 +0100
+@@ -6,13 +6,20 @@
+   $database_name     = $puppetdb::params::database_name,
+   $database_username = $puppetdb::params::database_username,
+   $database_password = $puppetdb::params::database_password,
++  $ipv4_allow_local_loopback = $puppetdb::params::ipv4_allow_local_loopback,
++  $postgres_password = $puppetdb::params::postgres_password,
++  $database_extension = $puppetdb::params::database_extension,
++  $extension_package = $puppetdb::params::extension_package,
++  $puppetdb_service =  $puppetdb::params::puppetdb_service,
++
+ ) inherits puppetdb::params {
+ 
+   # get the pg server up and running
+   class { '::postgresql_litp::server':
+     ip_mask_allow_all_users => '0.0.0.0/0',
+     listen_addresses        => $listen_addresses,
+-    manage_firewall         => $manage_firewall,
++    postgres_password       => $postgres_password,
++  #  manage_firewall        => $manage_firewall,
+   }
+ 
+   # create the puppetdb database
+@@ -21,4 +28,22 @@
+     password => $database_password,
+     grant    => 'all',
+   }
++
++  postgresql_litp::server::extension { $database_extension:
++      database        =>  $database_name,
++      ensure          =>  'present',
++      package_name    =>  $extension_package,
++      package_ensure  =>  'present',
++      notify          =>  Service["$puppetdb_service"],
++  }
++
++  #Add access rules for database
++  postgresql_litp::server::pg_hba_rule { 'Allow puppetdb user access to puppetdb database from local IPv4 loopback address using tcp connection and md5 authentication':
++    type        => 'host',
++    database    => $database_name,
++    user        => $database_username,
++    auth_method => 'md5',
++    address     => $ipv4_allow_local_loopback,
++    order       => '040',
++  }
+ }
+diff -Naur ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/db_pwd.pp ../../target/puppet/puppetdb/manifests/db_pwd.pp
+--- ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/db_pwd.pp	1970-01-01 01:00:00.000000000 +0100
++++ ../../target/puppet/puppetdb/manifests/db_pwd.pp	2019-07-25 14:41:08.000000000 +0100
+@@ -0,0 +1,3 @@
++class puppetdb::db_pwd {
++  $postgres_password = '<<md5pwd>>'
++}
+diff -Naur ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/master/config.pp ../../target/puppet/puppetdb/manifests/master/config.pp
+--- ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/master/config.pp	2019-07-25 14:43:21.022341200 +0100
++++ ../../target/puppet/puppetdb/manifests/master/config.pp	2019-07-25 14:41:08.000000000 +0100
+@@ -86,10 +86,11 @@
+     # We will need to restart the puppet master service if certain config
+     # files are changed, so here we make sure it's in the catalog.
+     if ! defined(Service[$puppet_service_name]) {
+-      service { $puppet_service_name:
+-        ensure => running,
+-      }
++    #  service { $puppet_service_name:
++    #    ensure => running,
++    #  }
+     }
++    Class['puppetdb::master::report_processor'] ~> Service[$puppet_service_name]
+ 
+     if ($manage_config) {
+       Class['puppetdb::master::puppetdb_conf'] ~> Service[$puppet_service_name]
+diff -Naur ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/params.pp ../../target/puppet/puppetdb/manifests/params.pp
+--- ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/params.pp	2019-07-25 14:43:21.030341199 +0100
++++ ../../target/puppet/puppetdb/manifests/params.pp	2019-07-25 14:45:23.186334433 +0100
+@@ -1,5 +1,5 @@
+ # The puppetdb default configuration settings.
+-class puppetdb::params {
++class puppetdb::params inherits puppetdb::db_pwd {
+   $listen_address            = 'localhost'
+   $listen_port               = '8080'
+   $open_listen_port          = false
+@@ -7,11 +7,13 @@
+   $ssl_listen_port           = '8081'
+   $disable_ssl               = false
+   $open_ssl_listen_port      = undef
+-  $postgres_listen_addresses = 'localhost'
++  $postgres_listen_addresses = '127.0.0.1'
+   $open_postgres_port        = undef
+ 
+   $database                  = 'postgres'
+ 
++  $ipv4_allow_local_loopback = '127.0.0.1/32'
++
+   # The remaining database settings are not used for an embedded database
+   $database_host          = 'localhost'
+   $database_port          = '5432'
+@@ -19,6 +21,8 @@
+   $database_username      = 'puppetdb'
+   $database_password      = 'puppetdb'
+   $database_ssl           = false
++  $database_extension     = 'pg_trgm'
++  $extension_package      = 'rh-postgresql96-postgresql-contrib'
+ 
+   # These settings manage the various auto-deactivation and auto-purge settings
+   $node_ttl               = '0s'
+@@ -33,6 +37,8 @@
+   $conn_max_age           = '60'
+   $conn_keep_alive        = '45'
+   $conn_lifetime          = '0'
++  $cipher_suites          = 'TLS_DHE_RSA_WITH_AES_256_GCM_SHA384,TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'
++  $ssl_protocols          = 'TLSv1.2'
+ 
+   case $::osfamily {
+     'RedHat': {
+diff -Naur ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/server/jetty_ini.pp ../../target/puppet/puppetdb/manifests/server/jetty_ini.pp
+--- ../../../target/deps/puppetlabs-puppetdb-3.0.1/manifests/server/jetty_ini.pp	2019-07-25 14:43:21.037341199 +0100
++++ ../../target/puppet/puppetdb/manifests/server/jetty_ini.pp	2019-07-25 14:46:55.794329303 +0100
+@@ -6,6 +6,9 @@
+   $ssl_listen_port    = $puppetdb::params::ssl_listen_port,
+   $disable_ssl        = $puppetdb::params::disable_ssl,
+   $confdir            = $puppetdb::params::confdir,
++  $cipher_suites      = $puppetdb::params::cipher_suites,
++  $ssl_protocols      = $puppetdb::params::ssl_protocols,
++
+ ) inherits puppetdb::params {
+ 
+   #Set the defaults
+@@ -44,4 +47,16 @@
+     setting => 'ssl-port',
+     value   => $ssl_listen_port,
+   }
++
++  ini_setting {'puppetdb_sslprotocols':
++    ensure  => $ssl_setting_ensure,
++    setting => 'ssl-protocols',
++    value   => $ssl_protocols,
++  }
++
++  ini_setting {'puppetdb_ciphersuites':
++    ensure  => $ssl_setting_ensure,
++    setting => 'cipher-suites',
++    value   => $cipher_suites,
++  }
+ }
